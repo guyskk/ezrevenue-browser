@@ -8,18 +8,47 @@ export function createDeviceIdGetter({ prefix, storageKey } = {}) {
   /**
    * 获取或生成设备唯一ID
    * @returns {Promise<string>} 设备唯一ID
-   * @description 优先从browser.storage.local读取设备ID，不存在则生成新ID并存储
+   * @description 优先从browser.storage.sync读取设备ID，不存在则从本地存储迁移，最后生成新ID并存储到云端同步
    */
   async function getOrCreateDeviceId() {
-    const data = await browser.storage.local.get(storageKey)
-    let deviceId = data[storageKey]
-    if (!deviceId) {
-      deviceId = prefix + generateDeviceUniqueId()
-      console.log(`create deviceId ${deviceId}`)
-      await browser.storage.local.set({ [storageKey]: deviceId })
-    } else {
-      console.log(`get deviceId ${deviceId}`)
+    // 首先尝试从云端同步存储获取
+    const syncData = await browser.storage.sync.get(storageKey)
+    let deviceId = syncData[storageKey]
+    
+    if (deviceId) {
+      console.log(`get deviceId from sync storage: ${deviceId}`)
+      return deviceId
     }
+    
+    // 如果云端没有，尝试从本地存储获取（兼容历史数据）
+    const localData = await browser.storage.local.get(storageKey)
+    deviceId = localData[storageKey]
+    
+    if (deviceId) {
+      console.log(`migrate deviceId from local storage: ${deviceId}`)
+      try {
+        // 将本地设备ID迁移到云端存储
+        await browser.storage.sync.set({ [storageKey]: deviceId })
+        console.log(`successfully migrated deviceId to sync storage: ${deviceId}`)
+      } catch (error) {
+        console.warn(`failed to migrate deviceId to sync storage:`, error)
+        // 如果云端存储失败，继续使用本地存储的设备ID
+      }
+      return deviceId
+    }
+    
+    // 如果本地和云端都没有，生成新的设备ID
+    deviceId = prefix + generateDeviceUniqueId()
+    console.log(`create new deviceId: ${deviceId}`)
+    try {
+      await browser.storage.sync.set({ [storageKey]: deviceId })
+      console.log(`successfully stored new deviceId to sync storage: ${deviceId}`)
+    } catch (error) {
+      console.warn(`failed to store deviceId to sync storage, fallback to local storage:`, error)
+      // 如果云端存储失败，回退到本地存储
+      await browser.storage.local.set({ [storageKey]: deviceId })
+    }
+    
     return deviceId
   }
   return getOrCreateDeviceId
