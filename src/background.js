@@ -8,47 +8,42 @@ export function createDeviceIdGetter({ prefix, storageKey } = {}) {
   /**
    * 获取或生成设备唯一ID
    * @returns {Promise<string>} 设备唯一ID
-   * @description 优先从browser.storage.sync读取设备ID，不存在则从本地存储迁移，最后生成新ID并存储到云端同步
+   * @description 优先从browser.storage.local读取设备ID（主存储，更稳定），不存在则从云端同步存储恢复，
+   *              最后生成新ID并存储到本地和云端。每次都会尝试将本地ID异步同步到云端作为备份。
    */
   async function getOrCreateDeviceId() {
-    // 首先尝试从云端同步存储获取
-    const syncData = await browser.storage.sync.get(storageKey)
-    let deviceId = syncData[storageKey]
-    
-    if (deviceId) {
-      console.log(`get deviceId from sync storage: ${deviceId}`)
-      return deviceId
-    }
-    
-    // 如果云端没有，尝试从本地存储获取（兼容历史数据）
+    // 首先尝试从本地存储获取（主存储，更稳定）
     const localData = await browser.storage.local.get(storageKey)
-    deviceId = localData[storageKey]
-    
+    let deviceId = localData[storageKey]
+
     if (deviceId) {
-      console.log(`migrate deviceId from local storage: ${deviceId}`)
-      try {
-        // 将本地设备ID迁移到云端存储
-        await browser.storage.sync.set({ [storageKey]: deviceId })
-        console.log(`successfully migrated deviceId to sync storage: ${deviceId}`)
-      } catch (error) {
-        console.warn(`failed to migrate deviceId to sync storage:`, error)
-        // 如果云端存储失败，继续使用本地存储的设备ID
-      }
+      console.log(`get deviceId from local storage: ${deviceId}`)
+      // 异步同步到云端作为备份（不阻塞主流程，失败不影响结果）
+      browser.storage.sync.set({ [storageKey]: deviceId }).catch(() => {})
       return deviceId
     }
-    
+
+    // 如果本地没有，尝试从云端同步存储获取（恢复备份）
+    const syncData = await browser.storage.sync.get(storageKey)
+    deviceId = syncData[storageKey]
+
+    if (deviceId) {
+      console.log(`restore deviceId from sync storage: ${deviceId}`)
+      // 恢复到本地存储
+      await browser.storage.local.set({ [storageKey]: deviceId })
+      return deviceId
+    }
+
     // 如果本地和云端都没有，生成新的设备ID
     deviceId = prefix + generateDeviceUniqueId()
     console.log(`create new deviceId: ${deviceId}`)
-    try {
-      await browser.storage.sync.set({ [storageKey]: deviceId })
-      console.log(`successfully stored new deviceId to sync storage: ${deviceId}`)
-    } catch (error) {
-      console.warn(`failed to store deviceId to sync storage, fallback to local storage:`, error)
-      // 如果云端存储失败，回退到本地存储
-      await browser.storage.local.set({ [storageKey]: deviceId })
-    }
-    
+    // 同时存储到本地和云端
+    await browser.storage.local.set({ [storageKey]: deviceId })
+    // 云端存储失败不影响主流程
+    browser.storage.sync.set({ [storageKey]: deviceId }).catch((error) => {
+      console.warn(`failed to sync deviceId to cloud storage:`, error)
+    })
+
     return deviceId
   }
   return getOrCreateDeviceId
